@@ -16,7 +16,9 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	// How many iterations before we run the cleanup method?
 	protected $_cleanup_iterations = 10;
 	
-	//Daemon cmd options
+	protected $_gc_enabled = FALSE;
+	
+	// Daemon cmd options
 	protected $_daemon_config = array(
 		"fork",
 	);
@@ -33,7 +35,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		declare(ticks = 1);
 		
 		// Make sure PHP has support for pcntl
-		if( ! function_exists('pcntl_signal'))
+		if ( ! function_exists('pcntl_signal'))
 		{
 			$message = 'PHP does not appear to be compiled with the PCNTL extension.  This is neccesary for daemonization';
 			
@@ -45,6 +47,13 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		pcntl_signal(SIGTERM, array($this, 'handle_signals'));
 		pcntl_signal(SIGINT, array($this, 'handle_signals'));
 		pcntl_signal(SIGQUIT, array($this, 'handle_signals'));
+		
+		// Enable PHP 5.3 garbage collection
+		if (function_exists('gc_enable'))
+		{
+			gc_enable();
+			$this->$_gc_enabled = gc_enabled();
+		}
 	}
 	
 	public function handle_signals($signal)
@@ -68,7 +77,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	{
 		
 		// Should we fork this daemon?
-		if(array_key_exists('fork', $config) AND $config['fork'] == TRUE)
+		if (array_key_exists('fork', $config) AND $config['fork'] == TRUE)
 		{
 			$this->_fork();
 		}
@@ -79,9 +88,9 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		$iterations = 0;
 		
 		// Loop
-		while(TRUE)
+		while (TRUE)
 		{
-			//Increment iteration counter
+			// Increment iteration counter
 			$iterations++;
 			
 			// Execute loop statement in try catch block
@@ -93,7 +102,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			{
 				$result = $this->_handle_exception($e);
 				
-				if($this->_break_on_exception)
+				if ($this->_break_on_exception)
 					break;
 			}
             
@@ -102,7 +111,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
             	break;
             
             // Do we need to do any cleanup?
-            if($iterations > $this->_cleanup_iterations)
+            if ($iterations > $this->_cleanup_iterations)
             {
             	$this->_cleanup();
             	$iterations = 0;
@@ -124,8 +133,10 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	
 	abstract public function loop(array $config);
 	
-	public function before(array $config){}
-	public function after(array $config){}
+	public function before(array $config)
+	{}
+	public function after(array $config)
+	{}
 	
 	protected function _handle_exception(Exception $e)
 	{
@@ -144,7 +155,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			$this->_log(Log::ERROR,$message);
 			throw new Exception($message);
 		}
-		else if($pid)
+		elseif ($pid)
 		{
 			// This is the parent process.
 			$this->_log(Log::NOTICE,"Daemon launched with a PID of $pid");
@@ -159,6 +170,12 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		
 		// Force Kohana to write logs.  Otherwise, memory will continue to grow
 		Kohana::$log->write();
+		
+		// Garbage collection
+		if ($this->$_gc_enabled)
+		{
+			gc_collect_cycles();
+		}
 		
 		// Log memory usage for monitoring purposes
 		$this->_log(Log::INFO,"Running _cleanup().  Peak memory usage: :memory",array(":memory" => memory_get_peak_usage()));
