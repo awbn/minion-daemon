@@ -1,32 +1,72 @@
 <?php defined('SYSPATH') OR die('No direct script access.');
 
-// See http://pastebin.com/GTgw4uVR
-
+/**
+ * Kohana_Minion_Daemon class
+ * Creates a CLI Daemon using minion
+ * 
+ * @link http://pastebin.com/GTgw4uVR
+ * @abstract
+ * @extends Minion_Task
+ */
 abstract class Kohana_Minion_Daemon extends Minion_Task {
 
-	// Received stop signal?
+	/**
+	 * @var boolean Received stop signal?
+	 * @access protected
+	 */
 	protected $_terminate = FALSE;
 	
-	// Sleep time, in ms.  Default to 1s
+	/**
+	 * @var int Sleep time between loops, in ms.  Default to 1s
+	 * @access protected
+	 */
 	protected $_sleep = 1000000;
 	
-	// Break the loop on an exception?
+	/** 
+	 * @var boolean Break the loop on an exception?
+	 * @access protected
+	 */
 	protected $_break_on_exception = TRUE;
 	
-	// How many iterations before we run the cleanup method?
-	protected $_cleanup_iterations = 10;
+	/**
+	 * @var int How many iterations before we run the cleanup method?
+	 * @access protected
+	 */
+	protected $_cleanup_iterations = 25;
 	
+	/**
+	 * @var boolean PHP >5.3 garbage collection enabled?
+	 * @access protected
+	 */
 	protected $_gc_enabled = FALSE;
 	
-	// Daemon cmd options
+	/**
+	 * @var array CLI arguments
+	 * @access protected
+	 */
 	protected $_daemon_config = array(
 		"fork",
 	);
 	
+	/**
+	 * @var logger object
+	 * @access protected
+	 */
+	protected $_logger = NULL;
+	
+	/**
+	 * Sets up the daemon task
+	 * 
+	 * @access public
+	 * @return void
+	 */
 	public function __construct()
 	{
 		// No time limit on minion daemon tasks
 		set_time_limit(0);
+		
+		// Attach Kohana logger
+		$this->_logger = Kohana::$log;
 		
 		// Merge configs
 		$this->_config = Arr::merge($this->_daemon_config,$this->_config);
@@ -52,30 +92,50 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		if (function_exists('gc_enable'))
 		{
 			gc_enable();
-			$this->$_gc_enabled = gc_enabled();
+			$this->_gc_enabled = gc_enabled();
 		}
 	}
 	
+	/**
+	 * Handle PCNTRL signals
+	 * 
+	 * @access public
+	 * @param mixed $signal
+	 * @return void
+	 */
 	public function handle_signals($signal)
 	{
+		$this->_log(Log::INFO,"Received signal ':signal'", array(
+			':signal' => $signal,
+		));
+		
 		// We don't want to exit the script prematurely
-		switch ($signal) {
+		switch ($signal)
+		{
 			case SIGINT:
 			case SIGTERM:
 			case SIGQUIT:
 				$this->_terminate = TRUE;
-			break;
+				break;
 			default:
-				$this->_log(Log::ERROR, 'Unknown signal :signal', array(
+				$this->_log(Log::ERROR, 'signal :signal is unhandled. Terminating', array(
 					':signal' => $signal,
 				));
 				$this->_terminate = TRUE;
 		}
 	}
 
-	public function execute(array $config)
+	/**
+	 * Execute minion task.
+	 * This should NOT be extended unless absolutely neccesary
+	 * 
+	 * @access public
+	 * @param array $config
+	 * @param boolean $exit Exit() on completion?
+	 * @return void
+	 */
+	public function execute(array $config, $exit = TRUE)
 	{
-		
 		// Should we fork this daemon?
 		if (array_key_exists('fork', $config) AND $config['fork'] == TRUE)
 		{
@@ -85,13 +145,21 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		// Setup loop
 		$this->before($config);
 		
+		// Count the number of iterations.  Used for cleanup
 		$iterations = 0;
 		
-		// Loop
+		// Launch loop
 		while (TRUE)
 		{
+			// End the process if we received a signal since the last loop
+			if ($this->_terminate)
+				break;
+			
 			// Increment iteration counter
 			$iterations++;
+			
+			// Trigger heartbeat
+            $this->heartbeat($config);
 			
 			// Execute loop statement in try catch block
 			try
@@ -102,6 +170,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			{
 				$result = $this->_handle_exception($e);
 				
+				// Should we exit?
 				if ($this->_break_on_exception)
 					break;
 			}
@@ -111,38 +180,96 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
             	break;
             
             // Do we need to do any cleanup?
-            if ($iterations > $this->_cleanup_iterations)
+            if ($iterations == $this->_cleanup_iterations)
             {
-            	$this->_cleanup();
+            	$this->_cleanup($config);
+            	
+            	// Reset iterations counter
             	$iterations = 0;
             }
             
+             // Memory management
+            unset($result);
+            
             // Pause before next execution
             usleep($this->_sleep);
-            
-            unset($result);
 		}
 		
 		// Cleanup
 		$this->after($config);
 		
-		// Exit, rather than return, to keep a clean output
-		exit(0);
+		// If possible, exit rather than return to keep a clean output
+		if ($exit)
+		{
+			exit(0);
+		}
 	}
 	
 	
+	/**
+	 * Main process.
+	 *
+	 * Return FALSE or set $this->_terminate = TRUE to break out of the loop
+	 *
+	 * Since this loop runs over and over, be careful of memory usage 
+	 *
+	 * @access public
+	 * @abstract
+	 * @param array $config
+	 * @return boolean
+	 */
 	abstract public function loop(array $config);
 	
+	/**
+	 * Runs once to perform any set up tasks before the loop begins
+	 * 
+	 * @access public
+	 * @param array $config
+	 * @return void
+	 */
 	public function before(array $config)
 	{}
+	
+	/**
+	 * Runs once to perform any tear down tasks after the loop exits
+	 * 
+	 * @access public
+	 * @param array $config
+	 * @return void
+	 */
 	public function after(array $config)
 	{}
 	
+	/**
+	 * Runs once on every loop
+	 * Can be used to set a value that ensures the process is functioning
+	 * 
+	 * @access public
+	 * @param array $config
+	 * @return void
+	 */
+	public function heartbeat(array $config)
+	{}
+	
+	/**
+	 * Lightweight exception handler
+	 * 
+	 * @access protected
+	 * @param Exception $e
+	 * @return void
+	 */
 	protected function _handle_exception(Exception $e)
 	{
 		$this->_log(Log::ERROR,Kohana_Exception::text($e));
 	}
 	
+	/**
+	 * Fork the process
+	 * Exits the parent process
+	 * 
+	 * @access protected
+	 * @return void
+	 */
 	protected function _fork()
 	{
 		// Fork the current process
@@ -163,16 +290,24 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		}
 	}
 	
-	protected function _cleanup()
+	/**
+	 * Runs some cleanup tasks once every N iterations
+	 * Should be used to control memory, logging, etc
+	 * 
+	 * @access protected
+	 * @param array $config
+	 * @return void
+	 */
+	protected function _cleanup(array $config)
 	{
 		// Refresh stat cache
 		clearstatcache();
 		
 		// Force Kohana to write logs.  Otherwise, memory will continue to grow
-		Kohana::$log->write();
+		$this->_logger->write();
 		
 		// Garbage collection
-		if ($this->$_gc_enabled)
+		if ($this->_gc_enabled)
 		{
 			gc_collect_cycles();
 		}
@@ -181,6 +316,15 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		$this->_log(Log::INFO,"Running _cleanup().  Peak memory usage: :memory",array(":memory" => memory_get_peak_usage()));
 	}
 	
+	/**
+	 * Writes to both the CLI (if available) and to Kohana::$log
+	 * 
+	 * @access protected
+	 * @param mixed $level (default: Log::INFO)
+	 * @param mixed $message
+	 * @param array $values (default: NULL)
+	 * @return void
+	 */
 	protected function _log($level = NULL, $message, array $values = NULL)
 	{
 		$task = $this->__toString();
@@ -194,12 +338,11 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		}
 		
 		Minion_CLI::write("$level: $task: $message");
-		Kohana::$log->add($level, "$task: $message");
+		$this->_logger->add($level, "$task: $message");
 		
 		unset($task,$level,$message,$values);
 	
 		return $this;
 	}
-
 
 }
