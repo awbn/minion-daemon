@@ -10,6 +10,10 @@
  */
 abstract class Kohana_Minion_Daemon extends Minion_Task {
 
+	// Process constants
+	const PARENT_PROC	= 0;
+	const CHILD_PROC 	= 1;
+	
 	/**
 	 * @var boolean Received stop signal?
 	 * @access protected
@@ -32,7 +36,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	 * @var int How many iterations before we run the cleanup method?
 	 * @access protected
 	 */
-	protected $_cleanup_iterations = 25;
+	protected $_cleanup_iterations = 100;
 	
 	/**
 	 * @var boolean PHP >5.3 garbage collection enabled?
@@ -55,6 +59,12 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	protected $_logger = NULL;
 	
 	/**
+	 * @array log writer references
+	 * @access protected
+	 */
+	protected $_log_writers = array();
+	
+	/**
 	 * Sets up the daemon task
 	 * 
 	 * @access public
@@ -65,28 +75,38 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		// No time limit on minion daemon tasks
 		set_time_limit(0);
 		
-		// Attach Kohana logger
-		$this->_logger = Kohana::$log;
+		// Attach logger.  By default, this is the Minion logger.
+		$this->_logger = (class_exists("Minion_Log")) ? Minion_Log::instance() : Kohana::$log;
 		
+		// Attach the standard Kohana log file as an output.
+		$this->_logger->attach($this->_log_writers['file'] = new Log_File(APPPATH.'logs'));
+		
+		// Attach stdout log as an output.  Write to it on add
+		$this->_logger->attach($this->_log_writers['stdout'] = new Log_StdOut, array(), 0, TRUE);
+				
 		// Merge configs
-		$this->_config = Arr::merge($this->_daemon_config,$this->_config);
+		$this->_config = Arr::merge($this->_daemon_config, $this->_config);
 
 		// Signal handling
 		declare(ticks = 1);
 		
-		// Make sure PHP has support for pcntl
-		if ( ! function_exists('pcntl_signal'))
+		// Make sure PHP has support for pcntl if we want to fork...
+		if (array_key_exists('fork', $this->_config)
+			AND $this->_config['fork'] === TRUE
+			AND ! function_exists('pcntl_signal'))
 		{
 			$message = 'PHP does not appear to be compiled with the PCNTL extension.  This is neccesary for daemonization';
 			
 			$this->_log(Log::ERROR,$message);
 			throw new Exception($message); 
 		}
-
-		// Make sure we have handlers for SIGINT, SIGTERM, and SIGQUIT signals
-		pcntl_signal(SIGTERM, array($this, 'handle_signals'));
-		pcntl_signal(SIGINT, array($this, 'handle_signals'));
-		pcntl_signal(SIGQUIT, array($this, 'handle_signals'));
+		else
+		{
+			// Make sure we have handlers for SIGINT, SIGTERM, and SIGQUIT signals
+			pcntl_signal(SIGTERM, array($this, 'handle_signals'));
+			pcntl_signal(SIGINT, array($this, 'handle_signals'));
+			pcntl_signal(SIGQUIT, array($this, 'handle_signals'));
+		}
 		
 		// Enable PHP 5.3 garbage collection
 		if (function_exists('gc_enable'))
@@ -139,7 +159,11 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		// Should we fork this daemon?
 		if (array_key_exists('fork', $config) AND $config['fork'] == TRUE)
 		{
-			$this->_fork();
+			if ($this->_fork() == Minion_Daemon::PARENT_PROC)
+			{
+				// We're in the parent process
+				return;
+			}
 		}
 		
 		// Setup loop
@@ -251,6 +275,18 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	public function heartbeat(array $config)
 	{}
 	
+	
+	/**
+	 * Wrapper for $this->_terminate
+	 * 
+	 * @access public
+	 * @return void
+	 */
+	public function terminate()
+	{
+		$this->_terminate = TRUE;
+	}
+	
 	/**
 	 * Lightweight exception handler
 	 * 
@@ -268,7 +304,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	 * Exits the parent process
 	 * 
 	 * @access protected
-	 * @return void
+	 * @return boolean
 	 */
 	protected function _fork()
 	{
@@ -280,14 +316,22 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			$message = "Failed to fork process.  Exiting.";
 			
 			$this->_log(Log::ERROR,$message);
-			throw new Exception($message);
+			throw new Kohana_Exception($message);
 		}
 		elseif ($pid)
 		{
 			// This is the parent process.
 			$this->_log(Log::NOTICE,"Daemon launched with a PID of $pid");
-			exit(0);
+			
+			return Minion_Daemon::PARENT_PROC;
 		}
+		
+		// This is the child process.  Don't write output to the screen
+		if (array_key_exists('stdout',$this->_log_writers))
+		{
+			$this->_logger->detach($this->_log_writers['stdout']);
+		}
+		return Minion_Daemon::CHILD_PROC;
 	}
 	
 	/**
@@ -313,34 +357,23 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		}
 		
 		// Log memory usage for monitoring purposes
-		$this->_log(Log::INFO,"Running _cleanup().  Peak memory usage: :memory",array(":memory" => memory_get_peak_usage()));
+		$this->_log(Log::INFO,"Running _cleanup().  Current memory usage: :memory bytes.",array(":memory" => memory_get_usage()));
 	}
 	
 	/**
-	 * Writes to both the CLI (if available) and to Kohana::$log
+	 * Write to $this->_logger.  Prepends the task name
 	 * 
 	 * @access protected
-	 * @param mixed $level (default: Log::INFO)
+	 * @param mixed $level
 	 * @param mixed $message
 	 * @param array $values (default: NULL)
 	 * @return void
 	 */
-	protected function _log($level = NULL, $message, array $values = NULL)
+	protected function _log($level, $message, array $values = NULL)
 	{
 		$task = $this->__toString();
 		
-		$level = empty($level) ? Log::NOTICE : $level;
-		
-		if ($values)
-		{
-			// Insert the values into the message
-			$message = strtr($message, $values);
-		}
-		
-		Minion_CLI::write("$level: $task: $message");
-		$this->_logger->add($level, "$task: $message");
-		
-		unset($task,$level,$message,$values);
+		$this->_logger->add($level,"daemon ".$task.": ".$message,$values);
 	
 		return $this;
 	}
