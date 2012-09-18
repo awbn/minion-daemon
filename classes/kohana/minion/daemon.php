@@ -88,7 +88,8 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		$this->_logger = (class_exists("Minion_Log")) ? Minion_Log::instance() : Kohana::$log;
 
 		// Attach the standard Kohana log file as an output.
-		$this->_logger->attach($this->_log_writers['file'] = new Log_File(APPPATH.'log'));
+		$log_path = Kohana::$config->load('minion-daemon')->logpath;
+		$this->_logger->attach($this->_log_writers['file'] = new Log_File($log_path));
 
 		// Attach stdout log as an output.  Write to it on add
 		$this->_logger->attach($this->_log_writers['stdout'] = new Log_StdOut, array(), 0, TRUE);
