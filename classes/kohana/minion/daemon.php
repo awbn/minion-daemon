@@ -226,7 +226,10 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			try
 			{
 				$result = $this->loop($config);
-				pcntl_signal_dispatch(); //dispatching signals every loop
+				if(function_exists('pcntl_signal_dispatch'))
+				{
+					pcntl_signal_dispatch(); //dispatching signals every loop
+				}
 			}
 			catch(Exception $e)
 			{
