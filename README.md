@@ -10,7 +10,7 @@
 
 * [kohana-minion](https://github.com/kohana-minion/core) is used for the CLI interface
 * [minion-log](https://github.com/awbn/minion-log) is used, if available
-* Process forking requires the [pcntrl](http://php.net/manual/en/book.pcntl.php) PHP extension to be installed.  If you don't intend to use process forking, this can be skipped.
+* Process forking and signal handling requires the [pcntrl](http://php.net/manual/en/book.pcntl.php) PHP extension to be installed.
 * Some tests require the [test_helpers](https://github.com/sebastianbergmann/php-test-helpers) and [runkit](https://github.com/zenovich/runkit) PHP extensions to be installed.  If not available, the tests will be skipped.
 
 ## Compatibility
@@ -35,7 +35,7 @@ Example:
 
 ### Control Signals
 
-While in the foreground (e.g., when the script hasn't been forked), it will respond to any control signals such as `ctrl-x` and exit gracefully.
+The daemon responds to any control signals it receives and will exit gracefully.  While in the foreground (e.g., when the script hasn't been forked) this means it will exit gracefully when `ctrl-x` is called.
 
 ### Extending minion-daemon (e.g., writing a daemon)
 
@@ -83,7 +83,7 @@ If you want to change log writers/readers from within your daemon, use `$this->_
 ## Testing
 
 This module is unittested using the [unittest module](http://github.com/kohana/unittest).
-You can use the `minion.tasks.daemon` group to only run minion log tests.  It is also grouped under `minion` and `minion.tasks`.
+You can use the `minion.tasks.daemon` group to only run minion daemon tests.  It is also grouped under `minion` and `minion.tasks`.
 
 i.e.
 
