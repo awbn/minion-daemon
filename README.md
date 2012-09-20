@@ -25,12 +25,13 @@
 
 By default, the daemon class has the following options:
 * `fork=(true|false)` Should PHP fork (daemonize) the process?
+* `pid=/path/to/file` Set a pidfile.  Can be used to prevent multiple copies of the daemon from running at once
 
 Other options can be added in the task that extends the core `Minion_Task_Daemon` class.  
 
 Example:
 
-	minion worker:test --fork=true
+	minion worker:test --fork=true --pid=/tmp/minion-daemon.pid
 
 ### Control Signals
 
@@ -91,6 +92,10 @@ i.e.
 ## Bugs?  Issues?
 
 That's why this is hosted on github :).  Feel free to fork it, submit issues, or pull requests.
+
+## Thanks
+
+Thanks to [antmat](https://github.com/antmat) for suggestiong use of a pid file!
 
 ## License
 

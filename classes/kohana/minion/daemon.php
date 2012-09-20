@@ -54,12 +54,11 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	);
 
 	/**
-	 * _pid
-	 *
 	 * @var string PID filename
 	 * @access protected
 	 */
-	protected $_pid;
+	protected $_pid = NULL;
+	
 	/**
 	 * @var logger object
 	 * @access protected
@@ -97,22 +96,22 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		// Merge configs
 		$this->_config = Arr::merge($this->_daemon_config, $this->_config);
 
-		if(!function_exists('pcntl_signal_dispatch'))
+		if ( ! function_exists('pcntl_signal_dispatch'))
 		{
 			// PHP < 5.3 uses ticks to handle signals instead of pcntl_signal_dispatch
-			declare(ticks = 10); //call sighandler only every 10 ticks
+			// call sighandler only every 10 ticks
+			declare(ticks = 10);
 		}
 
-		// Make sure PHP has support for pcntl if we want to fork...
-		if (array_key_exists('fork', $this->_config)
-			AND $this->_config['fork'] === TRUE
-			AND ! function_exists('pcntl_signal'))
+		// Make sure PHP has support for pcntl
+		if ( ! function_exists('pcntl_signal'))
 		{
 			$message = 'PHP does not appear to be compiled with the PCNTL extension.  This is neccesary for daemonization';
 
 			$this->_log(Log::ERROR,$message);
-			throw new Exception($message);
+			throw new Kohana_Exception($message);
 		}
+		
 		pcntl_signal(SIGTERM, array($this, 'handle_signals'));
 		pcntl_signal(SIGINT, array($this, 'handle_signals'));
 		pcntl_signal(SIGQUIT, array($this, 'handle_signals'));
@@ -154,33 +153,54 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		}
 	}
 
+	/**
+	 * Create PID file
+	 * 
+	 * @access protected
+	 * @param array $config
+	 * @return void
+	 */
 	protected function _setup_pid(array $config)
 	{
-		if(array_key_exists('pid', $config) AND $config['pid'] !== NULL)
+		if (array_key_exists('pid', $config) AND $config['pid'] !== NULL)
 		{
 			$this->_pid = $config['pid'];
-			if(preg_match('@[^\w/\.]@u', $this->_pid))
+			
+			if (preg_match('@[^\w/\.]@u', $this->_pid))
 			{
 				$message = 'Invalid pidfile name';
 				$this->_log(Log::ERROR,$message);
-				throw new Exception($message);
+				throw new Kohana_Exception($message);
 			}
 
 			$dir = preg_replace('@^(.*/)?[\w\.]+$@u', '$1', $this->_pid);
-			if($dir AND !file_exists($dir))
+			
+			if ($dir AND ! file_exists($dir))
 			{
-				mkdir($dir, 0777, TRUE);
+				mkdir($dir, 02777, TRUE);
+				
+				// Fix umask issues
+				chmod($dir, 02777);
 			}
-			if(!file_exists($this->_pid))
+			
+			if ( ! file_exists($this->_pid))
 			{
 				file_put_contents($this->_pid, getmypid());
+				
+				chmod($this->_pid, 0666);
 			}
 			else
 			{
-				exit('Pid file is already present!');
+				$pid = file_get_contents($this->_pid);
+				
+				$message = "Daemon already running with a PID of $pid";
+				
+				$this->_log(Log::ERROR,$message);
+				throw new Kohana_Exception($message);
 			}
 		}
 	}
+	
 	/**
 	 * Execute minion task.
 	 * This should NOT be extended unless absolutely neccesary
@@ -201,8 +221,10 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 				return;
 			}
 		}
-		//set the pid if it is present;
+		
+		// Set the pid if it is present
 		$this->_setup_pid($config);
+		
 		// Setup loop
 		$this->before($config);
 
@@ -212,6 +234,12 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		// Launch loop
 		while (TRUE)
 		{
+			// Dispatching signals every loop.  PHP < 5.3 handles via ticks
+			if (function_exists('pcntl_signal_dispatch'))
+			{
+				pcntl_signal_dispatch();
+			}
+		
 			// End the process if we received a signal since the last loop
 			if ($this->_terminate)
 				break;
@@ -226,10 +254,6 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 			try
 			{
 				$result = $this->loop($config);
-				if(function_exists('pcntl_signal_dispatch'))
-				{
-					pcntl_signal_dispatch(); //dispatching signals every loop
-				}
 			}
 			catch(Exception $e)
 			{
@@ -262,17 +286,19 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 
 		// Cleanup
 		$this->after($config);
-		if($this->_pid)
+		
+		// Remove PID file
+		if ($this->_pid)
 		{
 			unlink($this->_pid);
 		}
+		
 		// If possible, exit rather than return to keep a clean output
 		if ($exit)
 		{
 			exit(0);
 		}
 	}
-
 
 	/**
 	 * Main process.
@@ -348,7 +374,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 	 * Exits the parent process
 	 *
 	 * @access protected
-	 * @return boolean
+	 * @return constant
 	 */
 	protected function _fork()
 	{
@@ -365,7 +391,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		elseif ($pid)
 		{
 			// This is the parent process.
-			$this->_log(Log::NOTICE,"Daemon launched with a PID of $pid");
+			$this->_log(Log::NOTICE,"Process forked with a PID of $pid");
 
 			return Minion_Daemon::PARENT_PROC;
 		}
@@ -375,6 +401,7 @@ abstract class Kohana_Minion_Daemon extends Minion_Task {
 		{
 			$this->_logger->detach($this->_log_writers['stdout']);
 		}
+		
 		return Minion_Daemon::CHILD_PROC;
 	}
 

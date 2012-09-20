@@ -131,6 +131,64 @@ class Minion_DaemonTest extends Kohana_Unittest_TestCase
 	}
 	
 	/**
+	 * Tests the pidfile
+	 * 
+	 * @access public
+	 * @return void
+	 */
+	function test_pidfile()
+	{		
+		$config = array(
+			"max_iterations" 	=> 5,
+			"pid" 				=> APPPATH.'cache/'.rand().'.pid', // Should be a writable location
+		);
+		
+		$this->assertFalse(file_exists($config['pid']), 'PID file should not exist before use');
+		
+		$task = Minion_Task::factory('worker:daemontest');
+		$log = $this->getMock("Log",array("add","write"));
+		$log_exit = $this->getMock("Log",array("add","write"));
+		
+		$task->set("_logger", $log);
+		
+		$log->expects($this->atLeastOnce())
+        	->method('add')
+        	->with($this->greaterThan(0),
+                   $this->stringContains("worker:daemontest: ".getmypid())
+            );
+        
+        $log_exit->expects($this->once())
+        	->method('add')
+        	->with($this->greaterThan(0),
+                   $this->stringContains("worker:daemontest: Daemon already running with a PID of ".getmypid())
+            );
+        
+		$task->execute($config, FALSE);
+		
+		$this->assertFalse(file_exists($config['pid']), 'PID file should be removed after use');
+		
+		
+		// Create a pid file to simulate a running process
+		file_put_contents($config['pid'], getmypid());
+		
+		$task->set("_logger", $log_exit);
+		$task->i = 0;
+		
+		try
+		{
+			$task->execute($config, FALSE);
+		}
+		catch(Kohana_Exception $e)
+		{
+			$this->assertNotSame(FALSE, strpos(Kohana_Exception::text($e), 'Daemon already running with a PID of '.getmypid()));
+		}
+				
+		$this->assertSame(0,$task->i, 'Loop should not have run if PID is already present');
+		
+		unlink($config['pid']);	
+	}
+	
+	/**
 	 * Test exception handling
 	 * 
 	 * @access public
@@ -462,10 +520,14 @@ class Minion_Task_Worker_DaemonTest extends Minion_Daemon {
 		}
 		
 		if (array_key_exists("log", $config))
-		{
-			$this->_log(Log::INFO,$config['log']);
+		{		
+			$this->_log(Log::INFO, $config['log']);
 		}
 		
+		if (array_key_exists("pid", $config))
+		{
+			$this->_log(Log::INFO, file_get_contents($this->_pid));
+		}
 	}
 	
 	/**
