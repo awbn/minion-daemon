@@ -95,7 +95,7 @@ That's why this is hosted on github :).  Feel free to fork it, submit issues, or
 
 ## Thanks
 
-Thanks to [antmat](https://github.com/antmat) for suggestiong use of a pid file!
+Thanks to [antmat](https://github.com/antmat) for suggesting the use of a pid file!
 
 ## License
 
